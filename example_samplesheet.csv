@@ -1,0 +1,5 @@
+sample,fastq_1,fastq_2,group
+gut_sample1,/data/gut_sample1_R1.fastq.gz,/data/gut_sample1_R2.fastq.gz,gut_microbiome
+gut_sample2,/data/gut_sample2_R1.fastq.gz,/data/gut_sample2_R2.fastq.gz,gut_microbiome
+soil_sample1,/data/soil_sample1_R1.fastq.gz,/data/soil_sample1_R2.fastq.gz,soil_microbiome
+ocean_sample1,/data/ocean_sample1_R1.fastq.gz,/data/ocean_sample1_R2.fastq.gz,marine

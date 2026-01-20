@@ -1,0 +1,11 @@
+# MAG Workflow Requirements
+
+# Pegasus WMS API
+pegasus-wms.api>=5.0.0
+
+# Data handling
+pandas>=1.5.0
+numpy>=1.24.0
+
+# Utilities
+pyyaml>=6.0
