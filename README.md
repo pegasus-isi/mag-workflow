@@ -482,6 +482,24 @@ condor_q -analyze <job_id>
 | Virus detection | geNomad | Not included |
 | Long-read support | Yes | Planned |
 
+## AI assisted - Workflow Conversion
+
+This Pegasus workflow was adapted from the nf-core/mag pipeline. The conversion was straightforward with Claude assisting in translating Nextflow concepts to Pegasus DAGs and job wrappers. Codex (GPT) was less effective during the initial conversion because it does not reliably fetch or reference external documentation, but it was helpful later for debugging dependency issues once the workflow skeleton existed. Docker image dependency problems were ultimately resolved with Gemini.
+
+Initial prompt used for the conversion:
+`can you help me convert this nextflow workflow to pegasus workflow: https://nf-co.re/mag/5.3.0/ ?`
+
+AI-assisted debugging note:
+To isolate early failures outside Pegasus, I asked Claude to create a manual test script that runs each pipeline step locally (see `run_manual.sh`).
+
+## Early Issues Encountered
+
+During the initial workflow runs, the following issues came up:
+
+- **Stage-in failures for wrapper scripts**: `pegasus::transfer` failed on the local site because `/usr/local/bin/metabat2.sh`, `/usr/local/bin/prodigal.sh`, and `/usr/local/bin/quast.sh` were missing, which caused `POST_SCRIPT_FAILED`.
+- **FastQC headless crash**: FastQC threw `java.awt.HeadlessException` even with `_JAVA_OPTIONS=-Djava.awt.headless=true`, indicating it still attempted to initialize a GUI without an X display.
+- **Docker dependency resolution**: The container build required extra prompting to resolve dependencies; final fixes were made using Gemini.
+
 ## References
 
 - nf-core/mag: https://nf-co.re/mag
