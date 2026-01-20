@@ -56,6 +56,10 @@ Input FASTQ files
                                   └──────────┘
 ```
 
+Workflow graph (test run with `--skip-fastqc --skip-binning`):
+
+![MAG workflow graph](output/mag-test-skip-fastqc-skip-bin-workflow.png)
+
 ## Data Source
 
 This workflow processes metagenomic sequencing data from Illumina (short-read) platforms.
@@ -126,6 +130,18 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Validate Manually (No Pegasus)
+
+You can validate the pipeline steps locally using the manual test script:
+
+```bash
+# From mag-workflow/
+./run_manual.sh --use-docker
+
+# Skip downloads and optional steps
+./run_manual.sh --use-docker --skip-download --skip-binning --skip-fastqc
+```
+
 ### Option A: Run with Test Data (Recommended for First-Time Users)
 
 The workflow includes built-in support for nf-core/mag test data. This is the easiest way to verify your setup:
@@ -138,7 +154,7 @@ The workflow includes built-in support for nf-core/mag test data. This is the ea
 ./workflow_generator.py --test --skip-taxonomy --skip-annotation --output workflow.yml
 
 # Submit to HTCondor
-pegasus-plan --submit -s condorpool -o local workflow.yml
+pegasus-plan --submit -s condorpool -o local workflow.yml  # catalogs in current directory
 ```
 
 Alternatively, use the standalone fetch script for more control:
@@ -193,7 +209,7 @@ docker push kthare10/mag-workflow:latest
 #### 4. Submit Workflow
 
 ```bash
-pegasus-plan --submit -s condorpool -o local workflow.yml
+pegasus-plan --submit -s condorpool -o local workflow.yml  # catalogs in current directory
 ```
 
 #### 5. Monitor Progress

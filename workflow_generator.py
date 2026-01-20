@@ -756,9 +756,9 @@ Samplesheet format (CSV):
     )
 
     # Write catalogs
-    sc.write(os.path.join(output_dir, "sites.yml"))
-    tc.write(os.path.join(output_dir, "transformations.yml"))
-    rc.write(os.path.join(output_dir, "replicas.yml"))
+    sc.write("sites.yml")
+    tc.write("transformations.yml")
+    rc.write("replicas.yml")
 
     # Write workflow
     wf.add_site_catalog(sc)
@@ -768,9 +768,9 @@ Samplesheet format (CSV):
 
     print(f"\nWorkflow generated successfully!")
     print(f"  Workflow: {args.output}")
-    print(f"  Site catalog: {output_dir}/sites.yml")
-    print(f"  Transformation catalog: {output_dir}/transformations.yml")
-    print(f"  Replica catalog: {output_dir}/replicas.yml")
+    print("  Site catalog: sites.yml")
+    print("  Transformation catalog: transformations.yml")
+    print("  Replica catalog: replicas.yml")
     print(f"\nTo submit the workflow:")
     print(f"  pegasus-plan --submit -s {args.execution_site} -o local {args.output}")
 
