@@ -511,6 +511,19 @@ During the initial workflow runs, the following issues came up:
 - Prokka: https://github.com/tseemann/prokka
 - Pegasus WMS: https://pegasus.isi.edu/
 
+## Citation
+
+If you use this workflow in your research, please cite:
+
+```
+@misc{mag-workflow,
+  title={Metagenomics Assembly and Binning Workflow using Pegasus WMS},
+  year={2025},
+  publisher={GitHub},
+  url={https://github.com/pegasus-isi/mag-workflow}
+}
+```
+
 ## Authors
 
 Komal Thareja (kthare10@renci.org)
