@@ -335,14 +335,18 @@ def create_workflow(
             fastqc_r1_zip = File(f"{sample_id}_R1_fastqc.zip")
 
             fastqc_job = Job("fastqc")
-            fastqc_job.add_args("--outdir", ".", "--threads", "2")
+            fastqc_job.add_args("--outdir", ".", "--threads", str(TOOL_CONFIGS["fastqc"]["cores"]))
             fastqc_job.add_inputs(r1_input)
+            # The input FASTQ must also be on the command line: FastQC
+            # with no file arguments starts its GUI and dies headless.
+            fastqc_job.add_args(r1_input)
             fastqc_job.add_outputs(fastqc_r1_html, fastqc_r1_zip, stage_out=True)
 
             if is_paired:
                 fastqc_r2_html = File(f"{sample_id}_R2_fastqc.html")
                 fastqc_r2_zip = File(f"{sample_id}_R2_fastqc.zip")
                 fastqc_job.add_inputs(r2_input)
+                fastqc_job.add_args(r2_input)
                 fastqc_job.add_outputs(fastqc_r2_html, fastqc_r2_zip, stage_out=True)
                 all_qc_files.extend([fastqc_r1_zip, fastqc_r2_zip])
             else:
@@ -363,7 +367,7 @@ def create_workflow(
             "-o", trimmed_r1,
             "--json", fastp_json,
             "--html", fastp_html,
-            "--thread", "4",
+            "--thread", str(TOOL_CONFIGS["fastp"]["cores"]),
             "--qualified_quality_phred", "20",
             "--length_required", "50"
         )
@@ -394,7 +398,7 @@ def create_workflow(
                     "-1", trimmed_r1,
                     "-2", trimmed_r2,
                     "-o", f"{sample_id}_megahit",
-                    "-t", "8",
+                    "-t", str(TOOL_CONFIGS["megahit"]["cores"]),
                     "--min-contig-len", "1000"
                 )
                 assembly_job.add_inputs(trimmed_r1, trimmed_r2)
@@ -402,7 +406,7 @@ def create_workflow(
                 assembly_job.add_args(
                     "-r", trimmed_r1,
                     "-o", f"{sample_id}_megahit",
-                    "-t", "8",
+                    "-t", str(TOOL_CONFIGS["megahit"]["cores"]),
                     "--min-contig-len", "1000"
                 )
                 assembly_job.add_inputs(trimmed_r1)
@@ -413,7 +417,7 @@ def create_workflow(
                     "-1", trimmed_r1,
                     "-2", trimmed_r2,
                     "-o", f"{sample_id}_spades",
-                    "-t", "16",
+                    "-t", str(TOOL_CONFIGS["spades"]["cores"]),
                     "--meta"
                 )
                 assembly_job.add_inputs(trimmed_r1, trimmed_r2)
@@ -421,13 +425,14 @@ def create_workflow(
                 assembly_job.add_args(
                     "-s", trimmed_r1,
                     "-o", f"{sample_id}_spades",
-                    "-t", "16",
+                    "-t", str(TOOL_CONFIGS["spades"]["cores"]),
                     "--meta"
                 )
                 assembly_job.add_inputs(trimmed_r1)
 
         assembly_job.add_outputs(contigs, assembly_log, stage_out=True)
-        assembly_job.add_profiles(Namespace.PEGASUS, key="memory", value="16GB")
+        assembly_job.add_profiles(Namespace.PEGASUS, key="memory",
+                                  value=TOOL_CONFIGS[assembler]["memory"])
         wf.add_jobs(assembly_job)
 
         # ============================================================
@@ -441,7 +446,7 @@ def create_workflow(
             contigs,
             "-o", f"{sample_id}_quast",
             "--min-contig", "1000",
-            "--threads", "4"
+            "--threads", str(TOOL_CONFIGS["quast"]["cores"])
         )
         quast_job.add_inputs(contigs)
         quast_job.add_outputs(quast_report, quast_html, stage_out=True)
@@ -492,7 +497,7 @@ def create_workflow(
                 "-a", depth_file,
                 "-o", f"{sample_id}_bins/bin",
                 "-m", "1500",
-                "-t", "4"
+                "-t", str(TOOL_CONFIGS["metabat2"]["cores"])
             )
             metabat_job.add_inputs(contigs, depth_file)
             metabat_job.add_outputs(bins_dir, stage_out=True)
@@ -510,7 +515,7 @@ def create_workflow(
                 "predict",
                 "--input", bins_dir,
                 "--output-directory", f"{sample_id}_checkm2",
-                "--threads", "8"
+                "--threads", str(TOOL_CONFIGS["checkm2"]["cores"])
             )
             if checkm2_db:
                 checkm2_job.add_args("--database_path", checkm2_db)
@@ -532,13 +537,14 @@ def create_workflow(
                     "--genome_dir", bins_dir,
                     "--out_dir", f"{sample_id}_gtdbtk",
                     "--extension", "fa",
-                    "--cpus", "8"
+                    "--cpus", str(TOOL_CONFIGS["gtdbtk"]["cores"])
                 )
                 if gtdbtk_db:
                     gtdbtk_job.add_args("--gtdbtk_data_path", gtdbtk_db)
                 gtdbtk_job.add_inputs(bins_dir, checkm2_report)
                 gtdbtk_job.add_outputs(gtdbtk_summary, stage_out=True)
-                gtdbtk_job.add_profiles(Namespace.PEGASUS, key="memory", value="64GB")
+                gtdbtk_job.add_profiles(Namespace.PEGASUS, key="memory",
+                                        value=TOOL_CONFIGS["gtdbtk"]["memory"])
                 wf.add_jobs(gtdbtk_job)
 
             # ============================================================
@@ -554,7 +560,7 @@ def create_workflow(
                     "--outdir", f"{sample_id}_prokka",
                     "--prefix", sample_id,
                     "--metagenome",
-                    "--cpus", "4",
+                    "--cpus", str(TOOL_CONFIGS["prokka"]["cores"]),
                     bins_dir
                 )
                 prokka_job.add_inputs(bins_dir)
@@ -697,7 +703,31 @@ Samplesheet format (CSV):
         help=f"Container image to use (default: {DEFAULT_CONTAINER})"
     )
 
+    parser.add_argument(
+        "--max-memory-gb",
+        type=int,
+        default=None,
+        help="Cap every job's memory profile at this many GB (for pools "
+             "with small worker nodes; test-scale data needs far less than "
+             "the production profiles)"
+    )
+    parser.add_argument(
+        "--max-cores",
+        type=int,
+        default=None,
+        help="Cap every job's cores profile (for small worker nodes)"
+    )
+
     args = parser.parse_args()
+
+    # Apply small-pool resource caps before any jobs are built.
+    if args.max_memory_gb or args.max_cores:
+        for cfg in TOOL_CONFIGS.values():
+            if args.max_memory_gb:
+                gb = int(cfg["memory"].rstrip("GB"))
+                cfg["memory"] = f"{min(gb, args.max_memory_gb)}GB"
+            if args.max_cores:
+                cfg["cores"] = min(cfg["cores"], args.max_cores)
 
     # Validate input: either --test or --samplesheet must be provided
     if not args.test and not args.samplesheet:
