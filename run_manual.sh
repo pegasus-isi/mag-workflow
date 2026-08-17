@@ -4,10 +4,10 @@
 # Tests each step of the pipeline before running with Pegasus
 #
 # Usage:
-#   ./test_workflow_manual.sh [--use-docker] [--skip-download]
+#   ./run_manual.sh [--use-container] [--skip-download]
 #
 # Options:
-#   --use-docker    Run tools inside Docker container
+#   --use-container Run tools inside the Apptainer container
 #   --skip-download Skip downloading test data (if already downloaded)
 #   --skip-binning  Skip binning and downstream steps (faster test)
 #   --skip-fastqc   Skip FastQC (fastp provides QC metrics anyway)
@@ -23,14 +23,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DATA_DIR="${SCRIPT_DIR}/test_data"
 OUTPUT_DIR="${SCRIPT_DIR}/test_output"
-CONTAINER_IMAGE="kthare10/mag-workflow:latest"
+CONTAINER_SIF="${CONTAINER_SIF:-Apptainer/MAG_Container.sif}"
 
 # Test data URLs (nf-core/mag test data)
 TEST_DATA_BASE_URL="https://github.com/nf-core/test-datasets/raw/mag/test_data"
 SAMPLE_NAME="test_minigut"
 
 # Parse arguments
-USE_DOCKER=false
+USE_CONTAINER=false
 SKIP_DOWNLOAD=false
 SKIP_BINNING=false
 SKIP_FASTQC=false
@@ -38,8 +38,8 @@ THREADS=4
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --use-docker)
-            USE_DOCKER=true
+        --use-container)
+            USE_CONTAINER=true
             shift
             ;;
         --skip-download)
@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--use-docker] [--skip-download] [--skip-binning] [--skip-fastqc] [--threads N]"
+            echo "Usage: $0 [--use-container] [--skip-download] [--skip-binning] [--skip-fastqc] [--threads N]"
             exit 1
             ;;
     esac
@@ -96,15 +96,18 @@ log_step() {
     echo -e "${GREEN}========================================${NC}"
 }
 
-# Function to run command (with or without Docker)
+# Function to run command (with or without the container).
+# --bind replaces docker -v, --pwd replaces -w, and APPTAINERENV_*
+# is how an env var is passed through to the container (docker -e).
 run_cmd() {
-    if [ "$USE_DOCKER" = true ]; then
-        docker run --rm \
-            -v "${TEST_DATA_DIR}:/data" \
-            -v "${OUTPUT_DIR}:/output" \
-            -w /output \
-            -e JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
-            "${CONTAINER_IMAGE}" \
+    if [ "$USE_CONTAINER" = true ]; then
+        JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
+        APPTAINERENV_JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
+        apptainer exec \
+            --bind "${TEST_DATA_DIR}:/data" \
+            --bind "${OUTPUT_DIR}:/output" \
+            --pwd /output \
+            "${SCRIPT_DIR}/${CONTAINER_SIF}" \
             "$@"
     else
         "$@"
@@ -113,13 +116,14 @@ run_cmd() {
 
 # Function to run command with xvfb (for FastQC)
 run_cmd_xvfb() {
-    if [ "$USE_DOCKER" = true ]; then
-        docker run --rm \
-            -v "${TEST_DATA_DIR}:/data" \
-            -v "${OUTPUT_DIR}:/output" \
-            -w /output \
-            -e JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
-            "${CONTAINER_IMAGE}" \
+    if [ "$USE_CONTAINER" = true ]; then
+        JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
+        APPTAINERENV_JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
+        apptainer exec \
+            --bind "${TEST_DATA_DIR}:/data" \
+            --bind "${OUTPUT_DIR}:/output" \
+            --pwd /output \
+            "${SCRIPT_DIR}/${CONTAINER_SIF}" \
             xvfb-run --auto-servernum "$@"
     else
         if command -v xvfb-run &> /dev/null; then
@@ -136,7 +140,7 @@ echo "  MAG Workflow Manual Test Script"
 echo "=============================================="
 echo ""
 echo "Configuration:"
-echo "  Use Docker:    ${USE_DOCKER}"
+echo "  Use container: ${USE_CONTAINER}"
 echo "  Skip Download: ${SKIP_DOWNLOAD}"
 echo "  Skip Binning:  ${SKIP_BINNING}"
 echo "  Skip FastQC:   ${SKIP_FASTQC}"
@@ -202,7 +206,7 @@ if [ "$SKIP_FASTQC" = true ]; then
 else
     log_info "Running FastQC on raw reads (this can be slow)..."
     log_info "Tip: Use --skip-fastqc since fastp also provides QC metrics"
-    if [ "$USE_DOCKER" = true ]; then
+    if [ "$USE_CONTAINER" = true ]; then
         run_cmd_xvfb fastqc \
             /data/${SAMPLE_NAME}_R1.fastq.gz \
             /data/${SAMPLE_NAME}_R2.fastq.gz \
@@ -231,7 +235,7 @@ fi
 log_step "2. fastp - Read Trimming"
 
 log_info "Running fastp for quality trimming (also provides QC metrics)..."
-if [ "$USE_DOCKER" = true ]; then
+if [ "$USE_CONTAINER" = true ]; then
     run_cmd fastp \
         -i /data/${SAMPLE_NAME}_R1.fastq.gz \
         -I /data/${SAMPLE_NAME}_R2.fastq.gz \
@@ -269,7 +273,7 @@ fi
 log_step "3. MEGAHIT - Metagenome Assembly"
 
 log_info "Running MEGAHIT assembly (this is the slowest step)..."
-if [ "$USE_DOCKER" = true ]; then
+if [ "$USE_CONTAINER" = true ]; then
     # Remove existing output directory if exists (MEGAHIT requirement)
     run_cmd rm -rf /output/${SAMPLE_NAME}_megahit || true
     run_cmd megahit \
@@ -294,7 +298,7 @@ fi
 if [ -f "${OUTPUT_DIR}/${SAMPLE_NAME}_contigs.fa" ]; then
     log_success "MEGAHIT completed - contigs generated"
     log_info "Contig stats:"
-    if [ "$USE_DOCKER" = true ]; then
+    if [ "$USE_CONTAINER" = true ]; then
         run_cmd sh -c "grep -c '^>' /output/${SAMPLE_NAME}_contigs.fa || echo 0"
     else
         echo "  Number of contigs: $(grep -c '^>' "${OUTPUT_DIR}/${SAMPLE_NAME}_contigs.fa" || echo 0)"
@@ -311,7 +315,7 @@ fi
 log_step "4. QUAST - Assembly Quality Assessment"
 
 log_info "Running QUAST..."
-if [ "$USE_DOCKER" = true ]; then
+if [ "$USE_CONTAINER" = true ]; then
     run_cmd quast.py \
         /output/${SAMPLE_NAME}_contigs.fa \
         -o /output/${SAMPLE_NAME}_quast \
@@ -340,7 +344,7 @@ fi
 log_step "5. Prodigal - Gene Prediction"
 
 log_info "Running Prodigal..."
-if [ "$USE_DOCKER" = true ]; then
+if [ "$USE_CONTAINER" = true ]; then
     run_cmd prodigal \
         -i /output/${SAMPLE_NAME}_contigs.fa \
         -a /output/${SAMPLE_NAME}_genes.faa \
@@ -358,7 +362,7 @@ fi
 
 if [ -f "${OUTPUT_DIR}/${SAMPLE_NAME}_genes.faa" ]; then
     log_success "Prodigal completed - genes predicted"
-    if [ "$USE_DOCKER" = true ]; then
+    if [ "$USE_CONTAINER" = true ]; then
         run_cmd sh -c "grep -c '^>' /output/${SAMPLE_NAME}_genes.faa || echo 0"
     else
         echo "  Number of predicted genes: $(grep -c '^>' "${OUTPUT_DIR}/${SAMPLE_NAME}_genes.faa" || echo 0)"
@@ -386,7 +390,7 @@ fi
 log_step "7. MultiQC - Report Aggregation"
 
 log_info "Running MultiQC..."
-if [ "$USE_DOCKER" = true ]; then
+if [ "$USE_CONTAINER" = true ]; then
     run_cmd multiqc /output -o /output/multiqc --force
 else
     run_cmd multiqc "${OUTPUT_DIR}" -o "${OUTPUT_DIR}/multiqc" --force

@@ -120,7 +120,7 @@ Some tools require reference databases:
 - Python 3.9+
 - Pegasus WMS v5.0+
 - HTCondor v10.2+
-- Docker or Singularity
+- Apptainer (on the submit host to build, and on the worker nodes to run)
 
 ### Python Dependencies
 
@@ -130,19 +130,74 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### Validate Manually (No Pegasus)
+### 1. Build the Container
+
+Required for **both** options below, and for the manual validation script —
+everything downstream expects the `.sif` to exist.
+
+```bash
+# Run from the workflow root — NOT from inside Apptainer/. The %files section
+# copies bin/*.sh into the image and its sources resolve against the invocation
+# directory, exactly like Docker's build context.
+apptainer build Apptainer/MAG_Container.sif Apptainer/MAG_Container.def
+
+# Verify
+apptainer exec Apptainer/MAG_Container.sif which megahit metabat2 gtdbtk prokka
+```
+
+No registry push — Pegasus stages the `.sif` like any other input file, and
+`workflow_generator.py` looks for `Apptainer/MAG_Container.sif` by default.
+`--container-image` still accepts a registry name
+(`kthare10/mag-workflow:latest`), so the Docker Hub path keeps working; anything
+ending in `.sif` is treated as a local file.
+
+The `%files` section is **load-bearing here**: transformations are registered
+with `is_stageable=False` and `pfn=/usr/local/bin/<tool>.sh`, so the wrapper
+scripts must be baked into the image rather than staged at run time.
+
+Apptainer cannot build on macOS, and a `.sif` is single-architecture — build on a
+Linux host matching your worker nodes. See [`APPTAINER.md`](APPTAINER.md). The legacy
+`Docker/MAG_Dockerfile` is kept as a fallback.
+
+<details>
+<summary>Optional: publish the image to ghcr.io</summary>
+
+Useful for sharing one build across a team or citing an immutable artifact. Needs a
+GitHub token with `write:packages`.
+
+```bash
+echo "$GHCR_TOKEN" | apptainer registry login --username <github-user> \
+    --password-stdin oras://ghcr.io
+
+TAG=$(git rev-parse --short HEAD)
+apptainer push Apptainer/MAG_Container.sif \
+    oras://ghcr.io/pegasus-isi/mag-workflow:$TAG
+
+# On the submit host, pull back to the path the generator expects
+apptainer pull Apptainer/MAG_Container.sif \
+    oras://ghcr.io/pegasus-isi/mag-workflow:$TAG
+```
+
+Do **not** put the `oras://` URL in the transformation catalog — Pegasus supports
+`docker://`, `shub://`, `library://`, `shifter://` and `file://`, not `oras://`.
+Treat ghcr.io as a distribution channel and keep staging the local `.sif`. Details in
+[`APPTAINER.md`](APPTAINER.md).
+
+</details>
+
+### 2. Validate Manually (No Pegasus)
 
 You can validate the pipeline steps locally using the manual test script:
 
 ```bash
 # From mag-workflow/
-./run_manual.sh --use-docker
+./run_manual.sh --use-container
 
 # Skip downloads and optional steps
-./run_manual.sh --use-docker --skip-download --skip-binning --skip-fastqc
+./run_manual.sh --use-container --skip-download --skip-binning --skip-fastqc
 ```
 
-### Option A: Run with Test Data (Recommended for First-Time Users)
+### 3. Option A: Run with Test Data (Recommended for First-Time Users)
 
 The workflow includes built-in support for nf-core/mag test data. This is the easiest way to verify your setup:
 
@@ -167,7 +222,7 @@ Alternatively, use the standalone fetch script for more control:
 ./workflow_generator.py --samplesheet test_samples.csv --output workflow.yml
 ```
 
-### Option B: Run with Your Own Data
+### 4. Option B: Run with Your Own Data
 
 #### 1. Prepare Samplesheet
 
@@ -180,13 +235,10 @@ gut_sample2,/data/gut2_R1.fastq.gz,/data/gut2_R2.fastq.gz,gut
 soil_sample1,/data/soil1_R1.fastq.gz,/data/soil1_R2.fastq.gz,soil
 ```
 
-#### 2. Build Docker Container
+#### 2. Build the Container
 
-```bash
-cd Docker
-docker build -f MAG_Dockerfile -t kthare10/mag-workflow:latest .
-docker push kthare10/mag-workflow:latest
-```
+Already covered in [Quick Start step 1](#1-build-the-container) — build it there if
+you have not yet.
 
 #### 3. Generate Workflow
 
@@ -448,10 +500,12 @@ fastp_job.add_args(
 - Verify sufficient sequencing depth
 - Lower minimum contig length
 
-**4. Container pull failures**
-- Verify container image exists
-- Check Singularity cache permissions
-- Try pre-pulling: `singularity pull docker://kthare10/mag-workflow:latest`
+**4. Container transfer failures**
+- Verify `Apptainer/MAG_Container.sif` exists and is readable
+  (`apptainer inspect Apptainer/MAG_Container.sif`)
+- Confirm the `.sif` was built for the worker nodes' architecture — a `.sif` has
+  no multi-arch manifest, so an aarch64 image will not exec on x86_64 workers
+- Check that `image_site="local"` matches where the file actually lives
 
 ### Debugging
 
