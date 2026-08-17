@@ -180,13 +180,31 @@ gut_sample2,/data/gut2_R1.fastq.gz,/data/gut2_R2.fastq.gz,gut
 soil_sample1,/data/soil1_R1.fastq.gz,/data/soil1_R2.fastq.gz,soil
 ```
 
-#### 2. Build Docker Container
+#### 2. Build the Container
 
 ```bash
-cd Docker
-docker build -f MAG_Dockerfile -t kthare10/mag-workflow:latest .
-docker push kthare10/mag-workflow:latest
+# Run from the workflow root — NOT from inside Apptainer/. The %files section
+# copies bin/*.sh into the image and its sources resolve against the invocation
+# directory, exactly like Docker's build context.
+apptainer build Apptainer/MAG_Container.sif Apptainer/MAG_Container.def
+
+# Verify
+apptainer exec Apptainer/MAG_Container.sif which megahit metabat2 gtdbtk prokka
 ```
+
+No registry push — Pegasus stages the `.sif` like any other input file, and
+`workflow_generator.py` looks for `Apptainer/MAG_Container.sif` by default.
+`--container-image` still accepts a registry name
+(`kthare10/mag-workflow:latest`), so the Docker Hub path keeps working; anything
+ending in `.sif` is treated as a local file.
+
+The `%files` section is **load-bearing here**: transformations are registered
+with `is_stageable=False` and `pfn=/usr/local/bin/<tool>.sh`, so the wrapper
+scripts must be baked into the image rather than staged at run time.
+
+Apptainer cannot build on macOS, and a `.sif` is single-architecture — build on a
+Linux host matching your worker nodes. See `../APPTAINER.md`. The legacy
+`Docker/MAG_Dockerfile` is kept as a fallback.
 
 #### 3. Generate Workflow
 
@@ -448,10 +466,12 @@ fastp_job.add_args(
 - Verify sufficient sequencing depth
 - Lower minimum contig length
 
-**4. Container pull failures**
-- Verify container image exists
-- Check Singularity cache permissions
-- Try pre-pulling: `singularity pull docker://kthare10/mag-workflow:latest`
+**4. Container transfer failures**
+- Verify `Apptainer/MAG_Container.sif` exists and is readable
+  (`apptainer inspect Apptainer/MAG_Container.sif`)
+- Confirm the `.sif` was built for the worker nodes' architecture — a `.sif` has
+  no multi-arch manifest, so an aarch64 image will not exec on x86_64 workers
+- Check that `image_site="local"` matches where the file actually lives
 
 ### Debugging
 

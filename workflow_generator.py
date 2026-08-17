@@ -45,7 +45,10 @@ except ImportError:
 
 
 # Default container image
-DEFAULT_CONTAINER = "docker://kthare10/mag-workflow:latest"
+# Local Apptainer image, relative to this file's directory. Build it with
+# `apptainer build` (see Apptainer/MAG_Container.def); Pegasus stages the .sif
+# like any other input file.
+DEFAULT_CONTAINER = "Apptainer/MAG_Container.sif"
 
 # Test data configuration
 TEST_DATA_BASE_URL = "https://github.com/nf-core/test-datasets/raw/mag/test_data"
@@ -213,11 +216,36 @@ def create_transformation_catalog(container_image: str) -> Tuple[TransformationC
     """Create Pegasus transformation catalog with container."""
     tc = TransformationCatalog()
 
+    # A path ending in .sif (the default) is a locally built Apptainer image.
+    # Pegasus stages the file like any other input, so image_site is the site
+    # where the .sif physically lives (the submit host = "local"). A full URL
+    # (docker://, https://) is passed through unchanged, and a bare name still
+    # means Docker Hub. The .sif suffix is the discriminator on purpose — a bare
+    # registry reference like "kthare10/mag-workflow:latest" also contains a
+    # slash, so testing for a path separator would misread it as a local file.
+    if "://" in container_image:
+        image_url = container_image
+        image_site = {"http": "web", "https": "web", "file": "local"}.get(
+            container_image.split("://", 1)[0], "docker_hub")
+    elif not container_image.endswith(".sif"):
+        image_url = "docker://" + container_image
+        image_site = "docker_hub"
+    else:
+        sif_path = container_image if os.path.isabs(container_image) else \
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), container_image)
+        if not os.path.exists(sif_path):
+            print(f"Warning: Apptainer image not found at {sif_path} — build it "
+                  f"first with: cd mag-workflow && apptainer build {sif_path} "
+                  f"Apptainer/MAG_Container.def")
+        image_url = "file://" + sif_path
+        image_site = "local"
+
     # Create container
     container = Container(
         "mag_container",
         Container.SINGULARITY,
-        image=container_image
+        image=image_url,
+        image_site=image_site,
     )
     tc.add_containers(container)
 

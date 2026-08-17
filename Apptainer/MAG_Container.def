@@ -1,0 +1,105 @@
+# MAG (Metagenome-Assembled Genomes) Workflow Container
+#
+# This definition file builds a container with all tools needed for the MAG workflow:
+# - FastQC: Quality control
+# - fastp: Read trimming
+# - MEGAHIT: Metagenome assembly
+# - SPAdes: Alternative assembler
+# - QUAST: Assembly QC
+# - Prodigal: Gene prediction
+# - MetaBAT2: Genome binning
+# - CheckM2: Bin quality assessment
+# - GTDB-Tk: Taxonomic classification
+# - Prokka: Genome annotation
+# - MultiQC: Report aggregation
+#
+# Converted from Docker/MAG_Dockerfile. `Bootstrap: docker` pulls and converts
+# the OCI base image directly, so no Docker installation is needed to build the
+# .sif, and the resulting file is referenced via a file:// path — no registry
+# push needed.
+#
+# IMPORTANT: the %files section is load-bearing here. The transformation catalog
+# registers each tool with is_stageable=False and pfn=/usr/local/bin/<tool>.sh,
+# so the wrapper scripts must be baked into the image. %files source paths
+# resolve against the directory `apptainer build` is invoked from — the same rule
+# as Docker's build context. Build from the workflow root:
+#
+#   cd mag-workflow
+#   apptainer build Apptainer/MAG_Container.sif Apptainer/MAG_Container.def
+
+Bootstrap: docker
+From: mambaorg/micromamba:1.5-jammy
+
+%files
+    bin/*.sh /usr/local/bin/
+
+%post
+    # %post always runs as root during the build, so no USER switching is
+    # needed (unlike the Dockerfile mambaorg pattern with USER root /
+    # $MAMBA_USER).
+
+    # Install system dependencies.
+    # curl + wget are mandatory: PegasusLite downloads its worker package
+    # inside the container before the job script ever runs.
+    # libgl1-mesa-glx and libfontconfig1 are often required by QUAST's Python
+    # dependencies; xvfb covers the headless/GUI tools.
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget \
+        curl \
+        git \
+        unzip \
+        pigz \
+        parallel \
+        libgomp1 \
+        procps \
+        hmmer \
+        xvfb \
+        libgl1-mesa-glx \
+        libfontconfig1
+    rm -rf /var/lib/apt/lists/*
+
+    # Combined installation: one solver pass so it finds a version of Python
+    # and libraries (like matplotlib) that work for QUAST, CheckM2 and Prokka
+    # simultaneously.
+    micromamba install -y -n base -c conda-forge -c bioconda \
+        python=3.8 \
+        pandas \
+        numpy \
+        biopython \
+        fastqc \
+        fastp \
+        multiqc \
+        megahit \
+        spades \
+        quast \
+        prodigal \
+        metabat2 \
+        samtools \
+        bowtie2 \
+        checkm2 \
+        gtdbtk \
+        prokka
+    micromamba clean --all --yes
+
+    # Copied in via %files above, which runs before %post regardless of
+    # section order.
+    chmod +x /usr/local/bin/*.sh
+
+    # Create directories. Docker's WORKDIR /data has no Apptainer equivalent;
+    # Pegasus jobs cd into their own working directory at runtime.
+    mkdir -p /data /output /databases
+
+%environment
+    # Ensure the micromamba bin is at the front of the PATH
+    export PATH="/opt/conda/bin:$PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%runscript
+    # Run inside the activated micromamba 'base' environment
+    exec micromamba run -n base "$@"
+
+%labels
+    maintainer Komal Thareja <kthare10@renci.org>
+    description MAG Workflow - Metagenome Assembly, Binning, and Annotation
+    version 1.1.0
