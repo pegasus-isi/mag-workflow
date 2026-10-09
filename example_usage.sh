@@ -49,7 +49,7 @@ ls -la output/*.yml workflow.yml 2>/dev/null || true
 # Instructions for submission
 echo ""
 echo "Step 3: To submit the workflow, run:"
-echo "  pegasus-plan --submit -s condorpool -o local workflow.yml"
+echo "  pegasus-plan --submit -s compute -o local workflow.yml"
 echo ""
 echo "Step 4: To monitor the workflow:"
 echo "  pegasus-status <run_directory>"

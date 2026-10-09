@@ -19,6 +19,16 @@ Pipeline steps:
 
 Usage:
     ./workflow_generator.py --samplesheet samples.csv --output workflow.yml
+
+    # A Slurm cluster:
+    ./workflow_generator.py --samplesheet samples.csv --site-style slurm \\
+        --queue cpu --project my_lab
+
+Sites: the workflow names no scheduler. Jobs state cores, memory and a
+wall-clock runtime, and plan against a site named "compute". A hosted site
+catalog (--hosted-site-catalog unity.yml, ...) defines it; otherwise
+custom_sites.py writes it to sites.yml as an HTCondor pool, or for Slurm via
+--site-style slurm --queue --project.
 """
 
 import argparse
@@ -34,14 +44,28 @@ from typing import Dict, List, Optional, Tuple
 # Pegasus imports
 try:
     from Pegasus.api import (
-        Job, File, Directory, FileServer, Site, SiteCatalog,
+        Arch, Job, File, OS, Properties,
         Transformation, TransformationCatalog, Container,
-        ReplicaCatalog, Workflow, Operation
+        ReplicaCatalog, Workflow
     )
 except ImportError:
     print("Error: Pegasus Python API not found.")
     print("Install with: pip install pegasus-wms.api")
     sys.exit(1)
+
+# Site-catalog handling. Keeps this generator free of scheduler details.
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+from custom_sites import (  # noqa: E402
+    HOSTED_SITE, STYLES, ensure_sites_yml, hosted_catalog, is_batch_site, parse_profile,
+    parse_tag_profile, worker_package_url,
+)
+
+# The container's OS, for the Pegasus worker package staged into it. Must
+# run on the image's base (Apptainer/MAG_Container.def:
+# mambaorg/micromamba:1.5-jammy, Ubuntu 22.04, glibc 2.35), not the submit
+# host. Pegasus publishes no ubuntu_22 package, so use the oldest-glibc one,
+# rhel_8 (glibc 2.28).
+CONTAINER_PLATFORM = "x86_64_rhel_8"
 
 
 # Default container image
@@ -67,19 +91,25 @@ TEST_SAMPLES = [
     },
 ]
 
-# Tool configurations
+# Tool configurations — the only resource statements the workflow makes,
+# with memory as "<n> GB" (the API converts that to MB; "16GB" is passed
+# through and the planner rejects it as non-numeric),
+# portable on any site. These are production-scale needs (GTDB-Tk and SPAdes
+# need more than a 16 GB node); on small worker nodes cap them with
+# --max-memory-gb / --max-cores. runtime is a wall-clock budget in seconds;
+# batch sites (Slurm) refuse or kill jobs without one, so keep it generous.
 TOOL_CONFIGS = {
-    "fastqc": {"memory": "2GB", "cores": 2},
-    "fastp": {"memory": "4GB", "cores": 4},
-    "megahit": {"memory": "16GB", "cores": 8},
-    "spades": {"memory": "32GB", "cores": 16},
-    "quast": {"memory": "4GB", "cores": 4},
-    "prodigal": {"memory": "4GB", "cores": 1},
-    "metabat2": {"memory": "8GB", "cores": 4},
-    "checkm2": {"memory": "16GB", "cores": 8},
-    "gtdbtk": {"memory": "64GB", "cores": 8},
-    "prokka": {"memory": "8GB", "cores": 4},
-    "multiqc": {"memory": "4GB", "cores": 2},
+    "fastqc": {"memory": "2 GB", "cores": 2, "runtime": 1800},
+    "fastp": {"memory": "4 GB", "cores": 4, "runtime": 3600},
+    "megahit": {"memory": "16 GB", "cores": 8, "runtime": 4 * 3600},
+    "spades": {"memory": "32 GB", "cores": 16, "runtime": 8 * 3600},
+    "quast": {"memory": "4 GB", "cores": 4, "runtime": 1800},
+    "prodigal": {"memory": "4 GB", "cores": 1, "runtime": 3600},
+    "metabat2": {"memory": "8 GB", "cores": 4, "runtime": 3600},
+    "checkm2": {"memory": "16 GB", "cores": 8, "runtime": 2 * 3600},
+    "gtdbtk": {"memory": "64 GB", "cores": 8, "runtime": 8 * 3600},
+    "prokka": {"memory": "8 GB", "cores": 4, "runtime": 2 * 3600},
+    "multiqc": {"memory": "4 GB", "cores": 2, "runtime": 1800},
 }
 
 
@@ -184,36 +214,53 @@ def download_test_data(output_dir: str) -> Tuple[List[Dict], str]:
     return downloaded_samples, samplesheet_path
 
 
-def create_site_catalog(execution_site: str, output_dir: str) -> SiteCatalog:
-    """Create Pegasus site catalog."""
-    sc = SiteCatalog()
+def create_properties(sites_yml: str = "sites.yml",
+                      bypass_input_staging: bool = False,
+                      worker_package: Optional[str] = None,
+                      hosted_site_catalog: Optional[str] = None) -> Properties:
+    """Pegasus properties; which ones depend on the site in use."""
+    props = Properties()
+    props["pegasus.transfer.threads"] = "16"
+    # Symlink rather than copy when an input already sits on the execution
+    # site. A no-op otherwise, so always on.
+    props["pegasus.transfer.links"] = "true"
+    if hosted_site_catalog:
+        # A centrally hosted site catalog (pegasushub pegasus-site-catalogs)
+        # defines the execution site; pegasus-plan downloads and caches it,
+        # and merges sites.yml over it.
+        props["pegasus.catalog.site.repo.file"] = hosted_site_catalog
+    if bypass_input_staging:
+        # Jobs read inputs (notably the .sif) straight from the submit host's
+        # paths. Only valid where workers share a filesystem with the submit
+        # host (a Slurm cluster) — never on a condor pool staging over
+        # HTCondor file transfer.
+        props["pegasus.transfer.bypass.input.staging"] = "true"
+    if worker_package:
+        # Stage the container-compatible worker package named in the TC
+        # (pegasus::worker) and never download one from inside a job: the
+        # image may lack curl/wget, workers may lack internet, and the submit
+        # host's kickstart may need a newer glibc than the image.
+        props["pegasus.transfer.worker.package"] = "true"
+        props["pegasus.transfer.worker.package.strict"] = "false"
+        props["pegasus.transfer.worker.package.autodownload"] = "false"
+    if os.path.isfile(sites_yml):
+        # Lets pegasus-plan find sites.yml from any directory.
+        props["pegasus.catalog.site"] = "YAML"
+        props["pegasus.catalog.site.file"] = os.path.abspath(sites_yml)
+    return props
 
-    # Local site for staging
-    local_site = Site("local")
-    local_site.add_directories(
-        Directory(Directory.SHARED_SCRATCH, f"{output_dir}/scratch")
-            .add_file_servers(FileServer(f"file://{output_dir}/scratch", Operation.ALL)),
-        Directory(Directory.LOCAL_STORAGE, f"{output_dir}/storage")
-            .add_file_servers(FileServer(f"file://{output_dir}/storage", Operation.ALL))
-    )
-    sc.add_sites(local_site)
 
-    # Execution site (condorpool)
-    exec_site = Site(execution_site)
-    exec_site.add_directories(
-        Directory(Directory.SHARED_SCRATCH, f"/tmp/{execution_site}")
-            .add_file_servers(FileServer(f"file:///tmp/{execution_site}", Operation.ALL))
-    )
-    exec_site.add_pegasus_profile(style="condor")
-    exec_site.add_condor_profile(universe="vanilla")
-    exec_site.add_env(LANG="en_US.UTF-8")
-    sc.add_sites(exec_site)
+def create_transformation_catalog(
+    container_image: str,
+    bind_workflow_dir: bool = False,
+    worker_package: Optional[str] = None,
+) -> Tuple[TransformationCatalog, Container]:
+    """Create Pegasus transformation catalog with container.
 
-    return sc
-
-
-def create_transformation_catalog(container_image: str) -> Tuple[TransformationCatalog, Container]:
-    """Create Pegasus transformation catalog with container."""
+    Nothing here names an execution site: the tool scripts live inside the
+    container and the .sif on "local" (the submit host), shipped to wherever
+    the job runs.
+    """
     tc = TransformationCatalog()
 
     # A path ending in .sif (the default) is a locally built Apptainer image.
@@ -247,6 +294,15 @@ def create_transformation_catalog(container_image: str) -> Tuple[TransformationC
         image=image_url,
         image_site=image_site,
     )
+    if bind_workflow_dir:
+        # Batch sites stage inputs as symlinks into the workflow directory,
+        # and PegasusLite starts containers with --no-home, so without this
+        # bind every job fails with kickstart "Unable to execute the
+        # specified binary" (exit 127). Never on a condor pool: the directory
+        # does not exist on its workers.
+        container.add_pegasus_profile(
+            container_arguments="--bind "
+            + os.path.dirname(os.path.abspath(__file__)))
     tc.add_containers(container)
 
     # Define transformations for each tool
@@ -256,7 +312,8 @@ def create_transformation_catalog(container_image: str) -> Tuple[TransformationC
     ]
 
     for tool in tools:
-        config = TOOL_CONFIGS.get(tool, {"memory": "4GB", "cores": 2})
+        config = TOOL_CONFIGS.get(
+            tool, {"memory": "4 GB", "cores": 2, "runtime": 3600})
         tx = Transformation(
             tool,
             site="local",
@@ -264,8 +321,25 @@ def create_transformation_catalog(container_image: str) -> Tuple[TransformationC
             is_stageable=False,  # Scripts are inside container, don't stage from submit host
             container=container
         )
-        tx.add_pegasus_profile(memory=config["memory"], cores=config["cores"])
+        tx.add_pegasus_profile(memory=config["memory"], cores=config["cores"],
+                               runtime=config["runtime"])
+        # MultiQC (click) needs a UTF-8 locale; this used to sit on the
+        # execution site, which no longer carries tool settings.
+        tx.add_env(LANG="en_US.UTF-8")
         tc.add_transformations(tx)
+
+    if worker_package:
+        tc.add_transformations(
+            Transformation(
+                "worker",
+                namespace="pegasus",
+                site="local",
+                pfn=worker_package,
+                is_stageable=True,
+                arch=Arch.X86_64,
+                os_type=OS.LINUX,
+            )
+        )
 
     return tc, container
 
@@ -459,8 +533,11 @@ def create_workflow(
                 assembly_job.add_inputs(trimmed_r1)
 
         assembly_job.add_outputs(contigs, assembly_log, stage_out=True)
-        assembly_job.add_profiles(Namespace.PEGASUS, key="memory",
-                                  value=TOOL_CONFIGS[assembler]["memory"])
+        # add_profiles passes the value through unconverted, and the planner
+        # wants MB.
+        assembly_job.add_profiles(
+            Namespace.PEGASUS, key="memory",
+            value=str(int(TOOL_CONFIGS[assembler]["memory"].split()[0]) * 1024))
         wf.add_jobs(assembly_job)
 
         # ============================================================
@@ -641,6 +718,10 @@ Examples:
   # Skip taxonomy and annotation steps
   %(prog)s --samplesheet samples.csv --skip-taxonomy --skip-annotation
 
+  # A Slurm cluster, or a hosted site catalog
+  %(prog)s --samplesheet samples.csv --site-style slurm --queue cpu --project my_lab
+  %(prog)s --samplesheet samples.csv --hosted-site-catalog unity.yml --project my_lab
+
 Samplesheet format (CSV):
   sample,fastq_1,fastq_2,group
   sample1,/path/to/sample1_R1.fastq.gz,/path/to/sample1_R2.fastq.gz,group1
@@ -671,7 +752,9 @@ Samplesheet format (CSV):
         "--output-dir",
         type=str,
         default="./output",
-        help="Output directory for results (default: ./output)"
+        help="Directory for downloaded --test data (default: ./output). "
+             "Results stage to output/ next to this script (the 'local' "
+             "site in sites.yml)"
     )
 
     # Assembly options
@@ -717,13 +800,58 @@ Samplesheet format (CSV):
         help="Path to CheckM2 database"
     )
 
-    # Execution options
+    # Execution options. Every site option has a default, so a run with
+    # only the inputs plans on "compute": the hosted catalog's site when one
+    # is named (--hosted-site-catalog or ~/.pegasusrc), else an HTCondor pool
+    # written to sites.yml. dest "execution_site" is what Studio matches to
+    # keep its "Where it runs" choice in sync.
     parser.add_argument(
         "--execution-site", "-e",
+        dest="execution_site",
         type=str,
-        default="condorpool",
-        help="HTCondor execution site name (default: condorpool)"
+        default=HOSTED_SITE,
+        help=f"Site to plan against (default: {HOSTED_SITE!r}, the name "
+             "hosted catalogs give their site)"
     )
+    # -s is already --samplesheet here, so the hosted catalog has no short
+    # form.
+    parser.add_argument(
+        "--hosted-site-catalog",
+        metavar="FILE",
+        help="Centrally hosted site catalog to plan against, e.g. unity.yml "
+             "(github.com/pegasushub/pegasus-site-catalogs); written to "
+             "pegasus.properties. Default: the one named in ~/.pegasusrc, "
+             "if any."
+    )
+    parser.add_argument(
+        "--site-style",
+        choices=("auto",) + STYLES + ("none",),
+        default="auto",
+        help="auto (default): keep a sites.yml entry or hosted catalog if one "
+             "exists, else add an HTCondor site. condor/slurm: (re)write this "
+             "site's entry. none: leave sites.yml alone."
+    )
+    parser.add_argument("--queue", metavar="PARTITION",
+                        help="Batch partition/queue jobs submit to")
+    parser.add_argument("--project", metavar="ACCOUNT",
+                        help="Allocation/account charged on a batch site")
+    parser.add_argument("--site-scratch", metavar="DIR",
+                        help="Slurm: shared scratch visible to workers and "
+                             "the submit host (default: ./work)")
+    parser.add_argument("--site-profile", action="append", default=[],
+                        type=parse_profile, metavar="NS:KEY=VALUE",
+                        help="Extra profile on the execution site; repeatable")
+    parser.add_argument("--tag-profile", action="append", default=[],
+                        type=parse_tag_profile, metavar="TAG:NS:KEY=VALUE",
+                        help="Profile for jobs carrying a tag; repeatable")
+    parser.add_argument("--shared-filesystem", choices=("auto", "yes", "no"),
+                        default="auto",
+                        help="Let jobs read inputs directly from the submit "
+                             "host. auto: on for Slurm sites, off for HTCondor.")
+    parser.add_argument("--sites-yml", metavar="FILE", default="sites.yml",
+                        help="Local site catalog (default: sites.yml)")
+    parser.add_argument("--skip-sites-catalog", action="store_true",
+                        help="Deprecated: same as --site-style none")
     parser.add_argument(
         "--container-image",
         type=str,
@@ -752,8 +880,8 @@ Samplesheet format (CSV):
     if args.max_memory_gb or args.max_cores:
         for cfg in TOOL_CONFIGS.values():
             if args.max_memory_gb:
-                gb = int(cfg["memory"].rstrip("GB"))
-                cfg["memory"] = f"{min(gb, args.max_memory_gb)}GB"
+                gb = int(cfg["memory"].split()[0])
+                cfg["memory"] = f"{min(gb, args.max_memory_gb)} GB"
             if args.max_cores:
                 cfg["cores"] = min(cfg["cores"], args.max_cores)
 
@@ -794,10 +922,44 @@ Samplesheet format (CSV):
     for sample in samples:
         print(f"  - {sample['id']} ({'single-end' if sample['single_end'] else 'paired-end'})")
 
-    # Create catalogs
+    # Site catalog and the settings that depend on the site
     print("\nCreating Pegasus catalogs...")
-    sc = create_site_catalog(args.execution_site, output_dir)
-    tc, container = create_transformation_catalog(args.container_image)
+    if args.skip_sites_catalog:
+        args.site_style = "none"
+    wf_dir = str(Path(__file__).parent.resolve())
+    action, style = ensure_sites_yml(
+        args.sites_yml, args.execution_site, wf_dir,
+        style=args.site_style, hosted=args.hosted_site_catalog,
+        queue=args.queue, project=args.project,
+        scratch=args.site_scratch, profiles=args.site_profile,
+        tag_profiles=args.tag_profile)
+    hosted = hosted_catalog(args.hosted_site_catalog)
+    print(f"  Site catalog: {args.sites_yml}: {action}"
+          + (f" (merged over hosted {hosted})" if hosted else ""))
+    if (style is None and hosted and args.execution_site != "local"
+            and args.execution_site != HOSTED_SITE):
+        # Nothing was written for this site, so planning works only if the
+        # hosted catalog happens to define it.
+        print(f"Warning: {args.execution_site!r} is not defined in "
+              f"{args.sites_yml} and hosted catalogs normally define only "
+              f"{HOSTED_SITE!r}: pegasus-plan will fail unless {hosted} has "
+              f"it. Use -e {HOSTED_SITE}, or --site-style condor/slurm to "
+              f"describe {args.execution_site!r}.")
+    if args.shared_filesystem == "auto":
+        bypass = style is not None and style != "condor"
+    else:
+        bypass = args.shared_filesystem == "yes"
+    bind = bypass or is_batch_site(style, args.hosted_site_catalog)
+    worker = worker_package_url(CONTAINER_PLATFORM)
+    if not worker:
+        print("Warning: pegasus-version not found: Pegasus will choose the "
+              "container's worker package itself (needs curl/wget in the "
+              "image and internet on the workers)")
+
+    props = create_properties(args.sites_yml, bypass, worker,
+                              args.hosted_site_catalog)
+    tc, container = create_transformation_catalog(
+        args.container_image, bind_workflow_dir=bind, worker_package=worker)
     rc = create_replica_catalog(samples)
 
     # Create workflow
@@ -813,20 +975,19 @@ Samplesheet format (CSV):
         checkm2_db=args.checkm2_db
     )
 
-    # Write catalogs
-    sc.write("sites.yml")
+    # Write catalogs (sites.yml was written by ensure_sites_yml above)
+    props.write()
     tc.write("transformations.yml")
     rc.write("replicas.yml")
 
     # Write workflow
-    wf.add_site_catalog(sc)
     wf.add_transformation_catalog(tc)
     wf.add_replica_catalog(rc)
     wf.write(args.output)
 
     print(f"\nWorkflow generated successfully!")
     print(f"  Workflow: {args.output}")
-    print("  Site catalog: sites.yml")
+    print(f"  Site catalog: {args.sites_yml}")
     print("  Transformation catalog: transformations.yml")
     print("  Replica catalog: replicas.yml")
     print(f"\nTo submit the workflow:")

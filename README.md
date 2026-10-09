@@ -209,7 +209,7 @@ The workflow includes built-in support for nf-core/mag test data. This is the ea
 ./workflow_generator.py --test --skip-taxonomy --skip-annotation --output workflow.yml
 
 # Submit to HTCondor
-pegasus-plan --submit -s condorpool -o local workflow.yml  # catalogs in current directory
+pegasus-plan --submit -s compute -o local workflow.yml  # catalogs in current directory
 ```
 
 Alternatively, use the standalone fetch script for more control:
@@ -254,14 +254,13 @@ you have not yet.
     --assembler megahit \
     --gtdbtk-db /path/to/gtdbtk_db \
     --checkm2-db /path/to/checkm2_db \
-    --execution-site condorpool \
     --output workflow.yml
 ```
 
 #### 4. Submit Workflow
 
 ```bash
-pegasus-plan --submit -s condorpool -o local workflow.yml  # catalogs in current directory
+pegasus-plan --submit -s compute -o local workflow.yml  # catalogs in current directory
 ```
 
 #### 5. Monitor Progress
@@ -280,7 +279,7 @@ pegasus-analyzer <run_directory>
 | `--test, -t` | Use nf-core/mag test data (auto-downloads) | False |
 | `--samplesheet, -s` | Input CSV with sample information | Required (unless `--test`) |
 | `--output, -o` | Output workflow YAML file | `workflow.yml` |
-| `--output-dir` | Output directory for results | `./output` |
+| `--output-dir` | Directory for downloaded `--test` data (results stage to `output/` next to the generator) | `./output` |
 | `--assembler` | Assembler: `megahit` or `spades` | `megahit` |
 | `--skip-binning` | Skip genome binning steps | False |
 | `--skip-fastqc` | Skip FastQC QC reports | False |
@@ -288,8 +287,33 @@ pegasus-analyzer <run_directory>
 | `--skip-annotation` | Skip Prokka annotation | False |
 | `--gtdbtk-db` | Path to GTDB-Tk database | None |
 | `--checkm2-db` | Path to CheckM2 database | None |
-| `--execution-site, -e` | HTCondor execution site | `condorpool` |
-| `--container-image` | Docker/Singularity image | `kthare10/mag-workflow:latest` |
+| `--container-image` | Apptainer `.sif` (or a `docker://` URL) | `Apptainer/MAG_Container.sif` |
+| `--max-memory-gb`, `--max-cores` | Cap every job's memory/cores (small worker nodes) | None |
+
+Site options (`-s` is `--samplesheet` here, so the hosted catalog has no short flag):
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `-e`, `--execution-site` | `compute` | Site to plan against (the name hosted catalogs give their site) |
+| `--hosted-site-catalog` | (none; `~/.pegasusrc` if set) | Hosted site catalog to plan against, e.g. `unity.yml` |
+| `--site-style` | `auto` | `auto`: keep an existing `sites.yml` entry or hosted catalog, else write `compute` as an HTCondor pool; `condor`/`slurm`: (re)write it; `none`: leave `sites.yml` alone |
+| `--queue`, `--project` | — | Batch partition and allocation account (Slurm) |
+| `--site-scratch` | `./work` | Slurm shared scratch visible to workers and the submit host |
+| `--site-profile`, `--tag-profile` | — | Extra profiles on the site or on tagged jobs; repeatable |
+| `--shared-filesystem` | `auto` | Read inputs directly from the submit host (on for Slurm, off for HTCondor) |
+| `--sites-yml` | `sites.yml` | Local site catalog |
+
+### Sites
+
+The workflow names no scheduler: each job states its resources and a
+wall-clock runtime, and plans against a site named `compute`. With
+`--hosted-site-catalog unity.yml` (or a hosted catalog set in `~/.pegasusrc`) the hosted catalog
+defines it; with no options `custom_sites.py` writes it to `sites.yml` as an
+HTCondor pool. For a Slurm cluster add
+`--site-style slurm --queue cpu --project my_lab`, then
+`pegasus-plan --submit -s compute -o local workflow.yml`.
+`custom_sites.py` also runs standalone (`./custom_sites.py --help`).
+
 
 ### fetch_test_data.py
 
