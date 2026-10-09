@@ -209,7 +209,7 @@ The workflow includes built-in support for nf-core/mag test data. This is the ea
 ./workflow_generator.py --test --skip-taxonomy --skip-annotation --output workflow.yml
 
 # Plan and submit (the generator prints this command; it never submits itself)
-pegasus-plan --dir submit -s compute -o local --submit workflow.yml
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
 ```
 
 Alternatively, use the standalone fetch script for more control:
@@ -264,7 +264,7 @@ it does not submit. `MAG-Workflow.ipynb` runs the same steps interactively
 (same `MagWorkflow` class) and submits from an explicit cell.
 
 ```bash
-pegasus-plan --dir submit -s compute -o local --submit workflow.yml
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
 ```
 
 #### 5. Monitor Progress
@@ -315,12 +315,12 @@ local HTCondor `compute` catalog instead.
 # Hosted site catalog (or one set in ~/.pegasusrc): generate, then plan + submit
 ./workflow_generator.py --test --skip-binning --skip-taxonomy --skip-annotation \
     --hosted-site-catalog unity.yml
-pegasus-plan --dir submit -s compute -o local --submit workflow.yml
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
 
 # Plain HTCondor pool, no site catalog
 ./workflow_generator.py --test --skip-binning --skip-taxonomy --skip-annotation \
     --max-memory-gb 14 -e condorpool
-pegasus-plan --dir submit -s condorpool -o local --submit workflow.yml
+pegasus-plan --dir submit -s condorpool -o local --output-dir "$PWD/output" --submit workflow.yml
 
 # Or interactively: the notebook drives the same MagWorkflow class
 jupyter notebook MAG-Workflow.ipynb
@@ -417,9 +417,9 @@ Aggregates all QC metrics:
 
 ## Output Files
 
-Staged to `wf-output/` in the directory you planned from when run from the
-CLI (Pegasus's default `local` site — the generator writes no site catalog),
-or to `output/` when run from `MAG-Workflow.ipynb`:
+Staged to `output/` — by the CLI's plan command (it passes `--output-dir`,
+since the generator writes no site catalog and Pegasus's default `local` site
+would otherwise use `wf-output/`) and by `MAG-Workflow.ipynb`:
 
 ```
 output/

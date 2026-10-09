@@ -986,8 +986,12 @@ Samplesheet format (CSV):
     print("  Replica catalog: replicas.yml")
     print(f"  Execution site: {args.execution_site_name}")
     print(f"  Hosted site catalog: {args.hosted_site_catalog or '(none — supply your own site catalog)'}")
+    # --output-dir: no site catalog defines "local", so Pegasus's built-in
+    # local site would otherwise stage outputs to ./wf-output.
+    output_dir = os.path.join(workflow.wf_dir, "output")
     print(f"\nTo plan and submit the workflow:")
-    print(f"  pegasus-plan --dir submit -s {args.execution_site_name} -o local --submit {args.output}")
+    print(f"  pegasus-plan --dir submit -s {args.execution_site_name} -o local "
+          f"--output-dir {output_dir} --submit {args.output}")
 
 
 if __name__ == "__main__":
