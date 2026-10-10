@@ -213,8 +213,10 @@ def print_summary(samples: List[Dict], samplesheet_path: str) -> None:
 2. Or use the --test flag directly:
    ./workflow_generator.py --test --output workflow.yml
 
-3. Submit to HTCondor:
-   pegasus-plan --submit -s condorpool -o local workflow.yml
+3. Plan and submit (the generator prints this; add -e condorpool to the
+   generator on a plain HTCondor pool with no site catalog, then plan with
+   -s condorpool):
+   pegasus-plan --dir submit -s compute -o local --submit workflow.yml
 
 Note: For a quick test run, consider using these flags to skip
 resource-intensive steps:

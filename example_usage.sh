@@ -48,8 +48,9 @@ ls -la output/*.yml workflow.yml 2>/dev/null || true
 
 # Instructions for submission
 echo ""
-echo "Step 3: To submit the workflow, run:"
-echo "  pegasus-plan --submit -s condorpool -o local workflow.yml"
+echo "Step 3: To plan and submit the workflow, run (add -e condorpool when"
+echo "generating on a plain HTCondor pool with no site catalog):"
+echo "  pegasus-plan --dir submit -s compute -o local --output-dir \"$PWD/output\" --submit workflow.yml"
 echo ""
 echo "Step 4: To monitor the workflow:"
 echo "  pegasus-status <run_directory>"

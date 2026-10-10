@@ -208,8 +208,8 @@ The workflow includes built-in support for nf-core/mag test data. This is the ea
 # Quick test (skip resource-intensive taxonomy/annotation steps)
 ./workflow_generator.py --test --skip-taxonomy --skip-annotation --output workflow.yml
 
-# Submit to HTCondor
-pegasus-plan --submit -s condorpool -o local workflow.yml  # catalogs in current directory
+# Plan and submit (the generator prints this command; it never submits itself)
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
 ```
 
 Alternatively, use the standalone fetch script for more control:
@@ -254,14 +254,17 @@ you have not yet.
     --assembler megahit \
     --gtdbtk-db /path/to/gtdbtk_db \
     --checkm2-db /path/to/checkm2_db \
-    --execution-site condorpool \
     --output workflow.yml
 ```
 
 #### 4. Submit Workflow
 
+The generator writes the workflow and its catalogs and prints the plan command;
+it does not submit. `MAG-Workflow.ipynb` runs the same steps interactively
+(same `MagWorkflow` class) and submits from an explicit cell.
+
 ```bash
-pegasus-plan --submit -s condorpool -o local workflow.yml  # catalogs in current directory
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
 ```
 
 #### 5. Monitor Progress
@@ -280,7 +283,7 @@ pegasus-analyzer <run_directory>
 | `--test, -t` | Use nf-core/mag test data (auto-downloads) | False |
 | `--samplesheet, -s` | Input CSV with sample information | Required (unless `--test`) |
 | `--output, -o` | Output workflow YAML file | `workflow.yml` |
-| `--output-dir` | Output directory for results | `./output` |
+| `--output-dir` | Directory for downloaded `--test` data | `./output` |
 | `--assembler` | Assembler: `megahit` or `spades` | `megahit` |
 | `--skip-binning` | Skip genome binning steps | False |
 | `--skip-fastqc` | Skip FastQC QC reports | False |
@@ -288,8 +291,40 @@ pegasus-analyzer <run_directory>
 | `--skip-annotation` | Skip Prokka annotation | False |
 | `--gtdbtk-db` | Path to GTDB-Tk database | None |
 | `--checkm2-db` | Path to CheckM2 database | None |
-| `--execution-site, -e` | HTCondor execution site | `condorpool` |
-| `--container-image` | Docker/Singularity image | `kthare10/mag-workflow:latest` |
+| `--container-image` | Apptainer `.sif` (or a `docker://` URL) | `Apptainer/MAG_Container.sif` |
+| `--max-memory-gb`, `--max-cores` | Cap every job's memory/cores (small worker nodes) | None |
+
+Site options (`-s` is `--samplesheet` here, so the hosted catalog has no short flag):
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--hosted-site-catalog` | (none; `~/.pegasusrc` if set) | [Hosted site catalog](https://github.com/pegasushub/pegasus-site-catalogs/tree/main/conf) to plan against, e.g. `access-pegasus.yml`, `unity.yml` |
+| `-e`, `--execution-site-name` (alias `--execution-site`) | `compute` | Execution site name; `condorpool` on a plain HTCondor pool with no site catalog |
+
+### Sites
+
+Jobs run on a site named `compute`, defined by a centrally hosted site catalog
+(`--hosted-site-catalog unity.yml`, or one set once in `~/.pegasusrc`); the
+catalog carries the partition, allocation and scratch for that resource. The
+generator writes no site catalog. On a plain HTCondor pool with no catalog,
+generate with `-e condorpool` — Pegasus provides a default `condorpool` site —
+and plan with `-s condorpool`. The notebook's `create_sites_catalog()` writes a
+local HTCondor `compute` catalog instead.
+
+```bash
+# Hosted site catalog (or one set in ~/.pegasusrc): generate, then plan + submit
+./workflow_generator.py --test --skip-binning --skip-taxonomy --skip-annotation \
+    --hosted-site-catalog unity.yml
+pegasus-plan --dir submit -s compute -o local --output-dir "$PWD/output" --submit workflow.yml
+
+# Plain HTCondor pool, no site catalog
+./workflow_generator.py --test --skip-binning --skip-taxonomy --skip-annotation \
+    --max-memory-gb 14 -e condorpool
+pegasus-plan --dir submit -s condorpool -o local --output-dir "$PWD/output" --submit workflow.yml
+
+# Or interactively: the notebook drives the same MagWorkflow class
+jupyter notebook MAG-Workflow.ipynb
+```
 
 ### fetch_test_data.py
 
@@ -381,6 +416,10 @@ Aggregates all QC metrics:
 - Exportable data tables
 
 ## Output Files
+
+Staged to `output/` — by the CLI's plan command (it passes `--output-dir`,
+since the generator writes no site catalog and Pegasus's default `local` site
+would otherwise use `wf-output/`) and by `MAG-Workflow.ipynb`:
 
 ```
 output/
